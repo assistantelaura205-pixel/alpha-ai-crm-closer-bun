@@ -149,6 +149,40 @@ app.get("/inbox", async (c) => {
   // Inject apple-touch-icon (iOS Safari uses this in priority for PWA install)
   const appleLinks = '<link rel="apple-touch-icon" href="/icon-192.png" /><link rel="apple-touch-icon" sizes="180x180" href="/icon-192.png" /><link rel="apple-touch-icon" sizes="192x192" href="/icon-192.png" />';
   if (html.includes("</head>")) html = html.replace("</head>", appleLinks + "</head>");
+  // Mobile UX fix : closeMobileChat must clear inline display:block on detailPanel + chatArea
+  // (renderDetail sets detailPanel.style.display = 'block' which can persist after back button on iOS PWA)
+  const mobileFixScript = `<script>
+(function(){
+  function clearChatInlineStyles(){
+    var d = document.getElementById('detailPanel');
+    if (d) { d.style.display = ''; d.style.visibility = ''; }
+    var c = document.getElementById('chatArea');
+    if (c) { c.style.display = ''; }
+    document.body.classList.remove('view-chat');
+  }
+  function patchCloseMobileChat(){
+    if (typeof window.closeMobileChat === 'function') {
+      var orig = window.closeMobileChat;
+      window.closeMobileChat = function(){
+        try { orig(); } catch(e){}
+        clearChatInlineStyles();
+      };
+    } else {
+      setTimeout(patchCloseMobileChat, 50);
+    }
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', patchCloseMobileChat);
+  } else {
+    patchCloseMobileChat();
+  }
+  // Also handle browser back / PWA visibility return
+  window.addEventListener('popstate', clearChatInlineStyles);
+  window.addEventListener('pageshow', function(e){ if (e.persisted) clearChatInlineStyles(); });
+})();
+</script>`;
+  if (html.includes("</body>")) html = html.replace("</body>", mobileFixScript + "</body>");
+  else html += mobileFixScript;
   return c.html(html);
 });
 app.get("/api/health", (c) => c.json({ status: "ok", ts: Date.now() }));
