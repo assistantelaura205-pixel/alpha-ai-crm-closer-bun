@@ -15,6 +15,24 @@ const DIR_OUT = "📤 Outbound";
 const DIR_IN = "📥 Inbound";
 
 
+
+// === Anti-slug guard : refuse firstName that looks like a Skool slug ===
+const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)+-\d{2,5}$/i;
+function sanitizeFirstName(raw: any): string {
+  const v = (typeof raw === "string" ? raw : "").trim();
+  if (!v) return "là";
+  if (SLUG_RE.test(v)) {
+    console.log("FIRSTNAME_GUARD_SLUG_BLOCKED:", v);
+    return "là";
+  }
+  // also block if starts with prefix patterns
+  if (/^\[(bot|auto)/i.test(v)) {
+    console.log("FIRSTNAME_GUARD_PREFIX_BLOCKED:", v);
+    return "là";
+  }
+  return v;
+}
+
 // === Web Push (VAPID + ECE via web-push npm package) ===
 import webpush from "web-push";
 const VAPID_PUBLIC_KEY = (typeof process !== "undefined" && process.env && process.env.VAPID_PUBLIC_KEY) || "BG6vfxlVnGMMOa4o7fsA2afeoW_7KNQ8k6nYzDMxHDa3J-06JkD86Gjnet6FKU1vF2_8j_xZazryxdg_EfA6kTY";
@@ -218,7 +236,7 @@ app.post("/api/send", async (c) => {
 app.post("/api/iclosed-relance", async (c) => {
   const body: any = await c.req.json();
   const phone = String(body.phone || "").replace(/\D/g, "");
-  const firstName = (body.firstName || "").trim() || "là";
+  const firstName = sanitizeFirstName(body.firstName);
   const iclosedId = body.iclosedId || "";
   if (!phone || phone.length < 8) return c.json({ ok: false, error: "phone invalide" });
   const ts7d = new Date(Date.now() - 7 * 86400000).toISOString();
@@ -264,7 +282,7 @@ app.post("/api/skool-relance", async (c) => {
   }
   const body: any = await c.req.json();
   const phone = String(body.phone || "").replace(/\D/g, "");
-  const firstName = (body.firstName || "").trim() || "là";
+  const firstName = sanitizeFirstName(body.firstName);
   const skoolUsername = body.skoolUsername || "";
   if (!phone || phone.length < 8) return c.json({ ok: false, error: "phone invalide" }, 400);
   // Dedup 7 jours
