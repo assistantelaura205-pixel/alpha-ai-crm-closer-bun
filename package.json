@@ -1,0 +1,17 @@
+{
+  "name": "alpha-ai-crm-closer-bun",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "description": "CRM Closer Bun + Hono — WhatsApp inbox + 360dialog bridge + Skool bot relay",
+  "scripts": {
+    "dev": "bun run --hot index.tsx",
+    "start": "bun run index.tsx"
+  },
+  "dependencies": {
+    "hono": "^4.6.0"
+  },
+  "engines": {
+    "bun": ">=1.0.0"
+  }
+}
