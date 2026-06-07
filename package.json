@@ -3,13 +3,14 @@
   "version": "0.1.0",
   "type": "module",
   "private": true,
-  "description": "CRM Closer Bun + Hono — WhatsApp inbox + 360dialog bridge + Skool bot relay",
+  "description": "CRM Closer Bun + Hono \u2014 WhatsApp inbox + 360dialog bridge + Skool bot relay",
   "scripts": {
     "dev": "bun run --hot index.tsx",
     "start": "bun run index.tsx"
   },
   "dependencies": {
-    "hono": "^4.6.0"
+    "hono": "^4.6.0",
+    "web-push": "^3.6.7"
   },
   "engines": {
     "bun": ">=1.0.0"

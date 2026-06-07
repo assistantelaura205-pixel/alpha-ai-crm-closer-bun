@@ -14,6 +14,33 @@ const D360_BASE = "https://waba-v2.360dialog.io";
 const DIR_OUT = "📤 Outbound";
 const DIR_IN = "📥 Inbound";
 
+
+// === Web Push (VAPID + ECE via web-push npm package) ===
+import webpush from "web-push";
+const VAPID_PUBLIC_KEY = (typeof process !== "undefined" && process.env && process.env.VAPID_PUBLIC_KEY) || "BG6vfxlVnGMMOa4o7fsA2afeoW_7KNQ8k6nYzDMxHDa3J-06JkD86Gjnet6FKU1vF2_8j_xZazryxdg_EfA6kTY";
+const VAPID_PRIVATE_KEY = (typeof process !== "undefined" && process.env && process.env.VAPID_PRIVATE_KEY) || "";
+const VAPID_SUBJECT = "mailto:delmas.maxence.pro@gmail.com";
+const MAXENCE_PUSH_SUBSCRIPTION = (typeof process !== "undefined" && process.env && process.env.MAXENCE_PUSH_SUBSCRIPTION) || "";
+if (VAPID_PRIVATE_KEY && VAPID_PUBLIC_KEY) {
+  try { webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY); } catch (e) { console.error("VAPID setup error:", String(e)); }
+}
+async function firePushToMaxence(title: string, body: string, url: string = "/inbox", tag: string = "whatsapp-inbound") {
+  if (!MAXENCE_PUSH_SUBSCRIPTION || !VAPID_PRIVATE_KEY) {
+    console.log("PUSH_SKIP: missing subscription or private key");
+    return { sent: false, reason: "missing_config" };
+  }
+  try {
+    const subscription = JSON.parse(MAXENCE_PUSH_SUBSCRIPTION);
+    const payload = JSON.stringify({ title: title.slice(0, 80), body: body.slice(0, 200), url, tag });
+    const res = await webpush.sendNotification(subscription, payload, { TTL: 3600 });
+    console.log("PUSH_SENT:", title, "status=" + res.statusCode);
+    return { sent: true, status: res.statusCode };
+  } catch (e: any) {
+    console.error("PUSH_ERROR:", e && e.message ? e.message : String(e));
+    return { sent: false, error: e && e.message ? e.message : String(e) };
+  }
+}
+
 // === PWA static assets (inline pour éviter dépendance externe) ===
 const MANIFEST_JSON = JSON.stringify({
   name: "ALPHA AI Messagerie",
@@ -339,6 +366,13 @@ app.post("/api/webhook/d360", async (c) => {
           } })
         });
       } catch (e) {}
+
+      // Fire Web Push notif to Maxence (fire-and-forget, non-blocking)
+      try {
+        const pushTitle = firstName ? (firstName + " · WhatsApp") : ("WhatsApp +" + phone.slice(-4));
+        const pushBody = text || "[Nouveau message]";
+        firePushToMaxence(pushTitle, pushBody, "/inbox", "wa-" + phone).catch((e) => console.error("PUSH_FAIL:", String(e)));
+      } catch (e) { console.error("PUSH_SCHED_FAIL:", String(e)); }
 
       // Build conversation_history depuis Airtable
       const histUrl = "https://api.airtable.com/v0/" + AT_BASE + "/" + AT_TBL_MSG + "?filterByFormula=" + encodeURIComponent('SEARCH("' + phone + '",{Phone})') + "&sort%5B0%5D%5Bfield%5D=Timestamp&sort%5B0%5D%5Bdirection%5D=desc&maxRecords=20";
