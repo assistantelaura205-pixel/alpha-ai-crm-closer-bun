@@ -93,6 +93,20 @@ async function scheduleSmartSend(phone: string, draft: string, inboundMsgId: str
   pendingSends.set(phone, { sendTimer, typingTimer, draft, scheduledAt: Date.now() });
   return { delayMs: delay };
 }
+const WA_NIGHT_MODE = ((typeof process !== "undefined" && process.env && process.env.WA_NIGHT_MODE) || "queue_until_10am_paris").toLowerCase();
+const BUN_DANGER_KEYWORDS_RE = /\b(prix|combien|tarif|tarifs|cost|price|remboursement|rembours|refund|annul|arnaque|scam|fraude|contrat|engagement|r[ée]silier|paiement|payment|virement|cb)\b/i;
+function containsDangerKeyword(text: string): string | null {
+  const m = (text || "").match(BUN_DANGER_KEYWORDS_RE);
+  return m ? m[0] : null;
+}
+function isAIKilled(): boolean {
+  const v = ((typeof process !== "undefined" && process.env && process.env.BUN_AI_KILL_SWITCH) || "").toLowerCase();
+  return v === "true" || v === "1" || v === "yes" || v === "on";
+}
+function isNightQueueMode(): boolean {
+  return WA_NIGHT_MODE === "queue_until_10am_paris" && isQuietHourParis();
+}
+
 function cancelPendingSend(phone: string): boolean {
   const existing = pendingSends.get(phone);
   if (!existing) return false;
@@ -597,6 +611,31 @@ app.post("/api/webhook/d360", async (c) => {
         body: r.fields.Content || "",
         ts: Math.floor(new Date(r.fields.Timestamp || r.createdTime).getTime() / 1000)
       }))).reverse();
+
+      // === Night-safety guards (BEFORE POST Skool) ===
+      // (1) Kill switch global
+      if (isAIKilled()) {
+        console.log("AI_KILL_SWITCH_ACTIVE:", phone);
+        results.push({ phone, action: "killed", reason: "BUN_AI_KILL_SWITCH" });
+        continue;
+      }
+      // (2) Night mode queue (22h-10h Paris) : zero send, inbound already logged
+      if (isNightQueueMode()) {
+        console.log("NIGHT_MODE_QUEUED:", phone, "tz=Europe/Paris");
+        results.push({ phone, action: "queued_quiet_hours", reason: "night_mode_paris_22_10" });
+        continue;
+      }
+      // (3) Danger keyword → escalate to human (push notif Maxence)
+      const dangerKw = containsDangerKeyword(text);
+      if (dangerKw) {
+        console.log("DANGER_KEYWORD_BLOCKED:", phone, "kw=" + dangerKw);
+        try {
+          const pushTitle = "⚠️ Human required · " + (firstName || ("+" + phone.slice(-4)));
+          firePushToMaxence(pushTitle, "Keyword: " + dangerKw + " — " + (text || "").slice(0, 120), "/inbox", "danger-" + phone).catch(() => {});
+        } catch (e) {}
+        results.push({ phone, action: "human_required_keyword", keyword: dangerKw });
+        continue;
+      }
 
       // POST chez Skool
       if (!SKOOL_SECRET) {
