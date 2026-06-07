@@ -16,6 +16,93 @@ const DIR_IN = "📥 Inbound";
 
 
 
+
+// === Smart delay 2min30 + typing indicator + debounce per phone ===
+const WA_BOT_RESPONSE_DELAY_BASE_MS = parseInt((typeof process !== "undefined" && process.env && process.env.WA_BOT_RESPONSE_DELAY_BASE_MS) || "150000", 10);
+const WA_BOT_DELAY_JITTER_MS = parseInt((typeof process !== "undefined" && process.env && process.env.WA_BOT_DELAY_JITTER_MS) || "30000", 10);
+const WA_BOT_QUIET_MULTIPLIER = parseFloat((typeof process !== "undefined" && process.env && process.env.WA_BOT_QUIET_MULTIPLIER) || "5");
+const WA_BOT_TYPING_REFRESH_MS = 20000; // re-fire typing every 20s during long delays
+const pendingSends: Map<string, any> = new Map();
+function sleep(ms: number): Promise<void> { return new Promise(r => setTimeout(r, ms)); }
+function isQuietHourParis(): boolean {
+  try {
+    const h = parseInt(new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/Paris", hour: "2-digit", hour12: false }).format(new Date()), 10);
+    return h >= 22 || h < 10;
+  } catch (e) { return false; }
+}
+function computeSmartDelay(responseLength: number): number {
+  let multiplier = 1.0;
+  if (responseLength < 50) multiplier = 0.7;
+  else if (responseLength > 200) multiplier = 1.3;
+  const jitter = (Math.random() * 2 - 1) * WA_BOT_DELAY_JITTER_MS;
+  let delay = WA_BOT_RESPONSE_DELAY_BASE_MS * multiplier + jitter;
+  if (isQuietHourParis()) delay *= WA_BOT_QUIET_MULTIPLIER;
+  return Math.max(5000, Math.round(delay));
+}
+async function sendTypingIndicator(inboundMsgId: string): Promise<void> {
+  if (!inboundMsgId || !D360_KEY) return;
+  try {
+    await fetch(D360_BASE + "/messages", {
+      method: "POST",
+      headers: { "D360-API-KEY": D360_KEY, "Content-Type": "application/json" },
+      body: JSON.stringify({ messaging_product: "whatsapp", status: "read", message_id: inboundMsgId, typing_indicator: { type: "text" } })
+    });
+  } catch (e) { console.error("TYPING_ERROR:", String(e)); }
+}
+async function scheduleSmartSend(phone: string, draft: string, inboundMsgId: string, phase: string): Promise<{ delayMs: number }> {
+  // Debounce : cancel any pending send for this phone (new inbound invalidates old draft)
+  const existing = pendingSends.get(phone);
+  if (existing) {
+    if (existing.typingTimer) clearInterval(existing.typingTimer);
+    if (existing.sendTimer) clearTimeout(existing.sendTimer);
+    pendingSends.delete(phone);
+    console.log("SMART_DELAY_CANCELED_PREV:", phone);
+  }
+  const delay = computeSmartDelay(draft.length);
+  console.log("SMART_DELAY_SCHEDULED:", phone, "delayMs=" + delay, "len=" + draft.length, "quietHours=" + isQuietHourParis());
+  // Fire typing immediately + refresh every 20s
+  sendTypingIndicator(inboundMsgId).catch(() => {});
+  const typingTimer = setInterval(() => { sendTypingIndicator(inboundMsgId).catch(() => {}); }, WA_BOT_TYPING_REFRESH_MS);
+  const sendTimer = setTimeout(async () => {
+    clearInterval(typingTimer);
+    pendingSends.delete(phone);
+    try {
+      const sendRes = await fetch(D360_BASE + "/messages", {
+        method: "POST",
+        headers: { "D360-API-KEY": D360_KEY, "Content-Type": "application/json" },
+        body: JSON.stringify({ messaging_product: "whatsapp", to: phone, type: "text", text: { body: draft } })
+      });
+      const sendData: any = await sendRes.json();
+      const sentMsgId = (sendData.messages && sendData.messages[0] && sendData.messages[0].id) || null;
+      console.log("SMART_DELAY_SENT:", phone, "msgId=" + sentMsgId, "phase=" + phase);
+      if (sentMsgId) {
+        try {
+          await fetch("https://api.airtable.com/v0/" + AT_BASE + "/" + AT_TBL_MSG, {
+            method: "POST",
+            headers: { Authorization: "Bearer " + AT_PAT, "Content-Type": "application/json" },
+            body: JSON.stringify({ fields: {
+              "Message ID": sentMsgId, "Phone": "+" + phone, "Direction": DIR_OUT,
+              "Timestamp": new Date().toISOString(), "Type": "Text",
+              "Content": draft, "Status": "Sent"
+            } })
+          });
+        } catch (e) { console.error("SMART_DELAY_AIRTABLE_LOG_ERR:", String(e)); }
+      }
+    } catch (e) { console.error("SMART_DELAY_SEND_ERROR:", phone, String(e)); }
+  }, delay);
+  pendingSends.set(phone, { sendTimer, typingTimer, draft, scheduledAt: Date.now() });
+  return { delayMs: delay };
+}
+function cancelPendingSend(phone: string): boolean {
+  const existing = pendingSends.get(phone);
+  if (!existing) return false;
+  if (existing.typingTimer) clearInterval(existing.typingTimer);
+  if (existing.sendTimer) clearTimeout(existing.sendTimer);
+  pendingSends.delete(phone);
+  console.log("SMART_DELAY_CANCELED_NEW_INBOUND:", phone);
+  return true;
+}
+
 // === Anti-slug guard : refuse firstName that looks like a Skool slug ===
 const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)+-\d{2,5}$/i;
 function sanitizeFirstName(raw: any): string {
@@ -478,6 +565,9 @@ app.post("/api/webhook/d360", async (c) => {
         continue;
       }
 
+      // Debounce : new inbound for this phone cancels any pending send (the draft would be stale)
+      cancelPendingSend(phone);
+
       // Log Airtable Inbound
       try {
         await fetch("https://api.airtable.com/v0/" + AT_BASE + "/" + AT_TBL_MSG, {
@@ -525,27 +615,10 @@ app.post("/api/webhook/d360", async (c) => {
       const action = skoolData.action || "skip";
 
       if (action === "send" && skoolData.draft) {
-        const sendRes = await fetch(D360_BASE + "/messages", {
-          method: "POST",
-          headers: { "D360-API-KEY": D360_KEY, "Content-Type": "application/json" },
-          body: JSON.stringify({ messaging_product: "whatsapp", to: phone, type: "text", text: { body: skoolData.draft } })
-        });
-        const sendData: any = await sendRes.json();
-        const sentMsgId = (sendData.messages && sendData.messages[0] && sendData.messages[0].id) || null;
-        if (sentMsgId) {
-          try {
-            await fetch("https://api.airtable.com/v0/" + AT_BASE + "/" + AT_TBL_MSG, {
-              method: "POST",
-              headers: { Authorization: "Bearer " + AT_PAT, "Content-Type": "application/json" },
-              body: JSON.stringify({ fields: {
-                "Message ID": sentMsgId, "Phone": "+" + phone, "Direction": DIR_OUT,
-                "Timestamp": new Date().toISOString(), "Type": "Text",
-                "Content": skoolData.draft, "Status": "Sent"
-              } })
-            });
-          } catch (e) {}
-        }
-        results.push({ phone, action: "send", sentMsgId, phase: skoolData.phase });
+        // Schedule send with smart delay (~150s ±30s, modulated by length, ×5 quiet hours)
+        // The actual send + Airtable log happens in background via scheduleSmartSend's setTimeout.
+        const { delayMs } = await scheduleSmartSend(phone, skoolData.draft, msgId, skoolData.phase || "");
+        results.push({ phone, action: "scheduled", delayMs, phase: skoolData.phase, draftLen: skoolData.draft.length });
       } else if (action === "human_required") {
         results.push({ phone, action: "human_required", reason: skoolData.reason });
       } else {
