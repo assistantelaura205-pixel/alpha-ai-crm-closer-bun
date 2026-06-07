@@ -53,9 +53,9 @@ const MANIFEST_JSON = JSON.stringify({
   theme_color: "#000000",
   description: "Messagerie WhatsApp ALPHA AI",
   icons: [
-    { src: "/icon-192.svg", sizes: "192x192", type: "image/svg+xml", purpose: "any" },
-    { src: "/icon-512.svg", sizes: "512x512", type: "image/svg+xml", purpose: "any" },
-    { src: "/icon-512.svg", sizes: "512x512", type: "image/svg+xml", purpose: "maskable" }
+    { src: "/icon-192.png", sizes: "192x192", type: "image/png", purpose: "any" },
+    { src: "/icon-512.png", sizes: "512x512", type: "image/png", purpose: "any" },
+    { src: "/icon-512.png", sizes: "512x512", type: "image/png", purpose: "maskable" }
   ]
 });
 
@@ -68,8 +68,8 @@ self.addEventListener('push', e => {
   const title = data.title || 'Nouveau message WhatsApp';
   const options = {
     body: data.body || '',
-    icon: '/icon-192.svg',
-    badge: '/icon-192.svg',
+    icon: '/icon-192.png',
+    badge: '/icon-192.png',
     tag: data.tag || 'whatsapp-inbound',
     renotify: true,
     data: { url: data.url || '/inbox' }
@@ -126,12 +126,22 @@ async function fetchAllAirtable(url: string, headers: any): Promise<any[]> {
 
 // === Pages HTML ===
 app.get("/", async (c) => c.html(await fetchHtml(HTML_URL, "dash")));
-app.get("/inbox", async (c) => c.html(await fetchHtml(INBOX_URL, "inbox")));
+app.get("/inbox", async (c) => {
+  let html = await fetchHtml(INBOX_URL, "inbox");
+  // Inject apple-touch-icon (iOS Safari uses this in priority for PWA install)
+  const appleLinks = '<link rel="apple-touch-icon" href="/icon-192.png" /><link rel="apple-touch-icon" sizes="180x180" href="/icon-192.png" /><link rel="apple-touch-icon" sizes="192x192" href="/icon-192.png" />';
+  if (html.includes("</head>")) html = html.replace("</head>", appleLinks + "</head>");
+  return c.html(html);
+});
 app.get("/api/health", (c) => c.json({ status: "ok", ts: Date.now() }));
 
 // === PWA endpoints ===
 app.get("/manifest.json", () => new Response(MANIFEST_JSON, { headers: { "Content-Type": "application/manifest+json" } }));
 app.get("/sw.js", () => new Response(SW_JS, { headers: { "Content-Type": "application/javascript", "Service-Worker-Allowed": "/" } }));
+// PNG icons: read binary files from repo (Bun.file()), serve with image/png
+app.get("/icon-192.png", async () => { const f: any = (globalThis as any).Bun ? (globalThis as any).Bun.file("./icon-192.png") : null; const buf = f ? await f.arrayBuffer() : new ArrayBuffer(0); return new Response(buf, { headers: { "Content-Type": "image/png", "Cache-Control": "public, max-age=86400" } }); });
+app.get("/icon-512.png", async () => { const f: any = (globalThis as any).Bun ? (globalThis as any).Bun.file("./icon-512.png") : null; const buf = f ? await f.arrayBuffer() : new ArrayBuffer(0); return new Response(buf, { headers: { "Content-Type": "image/png", "Cache-Control": "public, max-age=86400" } }); });
+// Keep legacy SVG endpoints as fallback
 app.get("/icon-192.svg", () => new Response(ICON_SVG, { headers: { "Content-Type": "image/svg+xml" } }));
 app.get("/icon-512.svg", () => new Response(ICON_SVG, { headers: { "Content-Type": "image/svg+xml" } }));
 
