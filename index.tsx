@@ -149,36 +149,98 @@ app.get("/inbox", async (c) => {
   // Inject apple-touch-icon (iOS Safari uses this in priority for PWA install)
   const appleLinks = '<link rel="apple-touch-icon" href="/icon-192.png" /><link rel="apple-touch-icon" sizes="180x180" href="/icon-192.png" /><link rel="apple-touch-icon" sizes="192x192" href="/icon-192.png" />';
   if (html.includes("</head>")) html = html.replace("</head>", appleLinks + "</head>");
-  // Mobile UX fix : closeMobileChat must clear inline display:block on detailPanel + chatArea
-  // (renderDetail sets detailPanel.style.display = 'block' which can persist after back button on iOS PWA)
+  // Mobile UX FIX v2 (aggressive) : strong CSS + JS + MutationObserver
+  const mobileFixCss = `<style id="mobile-fix-v2">
+@media (max-width: 1000px) {
+  /* Default mobile state : ONLY sidebar visible */
+  .detail, #detailPanel { display: none !important; visibility: hidden !important; }
+  .chat, #chatArea { display: none !important; }
+  /* Chat mode (body.view-chat) : sidebar hidden, chat visible, detail still hidden */
+  body.view-chat .sidebar { display: none !important; }
+  body.view-chat .chat, body.view-chat #chatArea { display: flex !important; visibility: visible !important; }
+  body.view-chat .detail, body.view-chat #detailPanel { display: none !important; }
+}
+</style>`;
+  if (html.includes("</head>")) html = html.replace("</head>", mobileFixCss + "</head>");
   const mobileFixScript = `<script>
 (function(){
+  var DBG = false;
+  function isMobile(){ return window.matchMedia('(max-width: 1000px)').matches; }
   function clearChatInlineStyles(){
-    var d = document.getElementById('detailPanel');
-    if (d) { d.style.display = ''; d.style.visibility = ''; }
-    var c = document.getElementById('chatArea');
-    if (c) { c.style.display = ''; }
+    var ids = ['detailPanel', 'chatArea'];
+    for (var i = 0; i < ids.length; i++) {
+      var el = document.getElementById(ids[i]);
+      if (el) {
+        el.style.removeProperty('display');
+        el.style.removeProperty('visibility');
+      }
+    }
     document.body.classList.remove('view-chat');
+    if (DBG) console.log('[mobile-fix] cleared inline styles');
   }
   function patchCloseMobileChat(){
     if (typeof window.closeMobileChat === 'function') {
       var orig = window.closeMobileChat;
       window.closeMobileChat = function(){
-        try { orig(); } catch(e){}
+        try { orig.apply(this, arguments); } catch(e){}
         clearChatInlineStyles();
       };
     } else {
       setTimeout(patchCloseMobileChat, 50);
     }
   }
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', patchCloseMobileChat);
-  } else {
-    patchCloseMobileChat();
+  // MutationObserver : if inline display set on detailPanel/chatArea while NOT in view-chat, clear it
+  function installGuardObserver(){
+    var detail = document.getElementById('detailPanel');
+    var chat = document.getElementById('chatArea');
+    if (!detail && !chat) { setTimeout(installGuardObserver, 100); return; }
+    var obs = new MutationObserver(function(muts){
+      if (!isMobile()) return;
+      var inChat = document.body.classList.contains('view-chat');
+      for (var i = 0; i < muts.length; i++) {
+        var m = muts[i];
+        if (m.type !== 'attributes' || m.attributeName !== 'style') continue;
+        var t = m.target;
+        if (t.id === 'detailPanel') {
+          // .detail must be hidden ALWAYS on mobile (even in view-chat)
+          if (t.style.display && t.style.display !== 'none') {
+            t.style.removeProperty('display');
+            if (DBG) console.log('[mobile-fix] stripped detailPanel inline display');
+          }
+        } else if (t.id === 'chatArea') {
+          // chatArea must be hidden when NOT in view-chat
+          if (!inChat && t.style.display && t.style.display !== 'none') {
+            t.style.removeProperty('display');
+            if (DBG) console.log('[mobile-fix] stripped chatArea inline display (not in view-chat)');
+          }
+        }
+      }
+    });
+    if (detail) obs.observe(detail, { attributes: true, attributeFilter: ['style'] });
+    if (chat) obs.observe(chat, { attributes: true, attributeFilter: ['style'] });
   }
-  // Also handle browser back / PWA visibility return
+  // Hook clicks on .topbar a.back (Dashboard link) and any back button
+  function hookBackLinks(){
+    var links = document.querySelectorAll('.topbar a.back, .mobile-back, [aria-label="Retour"]');
+    for (var i = 0; i < links.length; i++) {
+      links[i].addEventListener('click', function(){ setTimeout(clearChatInlineStyles, 0); });
+    }
+  }
+  function init(){
+    patchCloseMobileChat();
+    installGuardObserver();
+    hookBackLinks();
+    clearChatInlineStyles(); // initial state cleanup
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
   window.addEventListener('popstate', clearChatInlineStyles);
   window.addEventListener('pageshow', function(e){ if (e.persisted) clearChatInlineStyles(); });
+  // Resize/orientation change : re-cleanup if back to mobile
+  window.addEventListener('resize', function(){ if (isMobile() && !document.body.classList.contains('view-chat')) clearChatInlineStyles(); });
 })();
 </script>`;
   if (html.includes("</body>")) html = html.replace("</body>", mobileFixScript + "</body>");
