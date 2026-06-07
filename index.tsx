@@ -107,6 +107,13 @@ function isNightQueueMode(): boolean {
   return WA_NIGHT_MODE === "queue_until_10am_paris" && isQuietHourParis();
 }
 
+// === Admin pause flag (toggleable via POST /admin/wa-pause from Skool dashboard) ===
+let WA_BOT_KILLED = false; // in-memory flag, toggleable via /admin/wa-pause
+const BRIDGE_SECRET = (typeof process !== "undefined" && process.env && process.env.BRIDGE_SECRET) || "ebf5a700aabe4aaf9a44051f6ad605a4";
+function isBotPaused(): boolean {
+  return WA_BOT_KILLED || isAIKilled();
+}
+
 function cancelPendingSend(phone: string): boolean {
   const existing = pendingSends.get(phone);
   if (!existing) return false;
@@ -555,6 +562,12 @@ app.post("/api/webhook/d360", async (c) => {
   if (body.messages) { messages = body.messages; contacts = body.contacts || []; }
   if (messages.length === 0) return c.json({ ok: true, skipped: "no messages" });
 
+  // ⚠️ Hard pause check FIRST (Skool dashboard kill switch + env BUN_AI_KILL_SWITCH)
+  if (isBotPaused()) {
+    console.log("WEBHOOK_BOT_PAUSED: incoming dropped, count=" + messages.length);
+    return c.json({ ok: true, paused: true, dropped: messages.length, reason: WA_BOT_KILLED ? "admin_wa_pause" : "env_kill_switch" });
+  }
+
   const results: any[] = [];
   for (const msg of messages) {
     try {
@@ -672,6 +685,20 @@ app.post("/api/webhook/d360", async (c) => {
 });
 
 // === Test endpoint : ping Skool bot ===
+// === Admin : pause/resume WA bot (called by Skool dashboard kill switch) ===
+app.post("/admin/wa-pause", async (c) => {
+  const secret = c.req.header("X-Bridge-Secret") || "";
+  if (secret !== BRIDGE_SECRET) return c.json({ ok: false, error: "unauthorized" }, 401);
+  let body: any = {};
+  try { body = await c.req.json(); } catch (e) {}
+  const requested = String(body.state || "").toLowerCase();
+  if (requested !== "on" && requested !== "off") return c.json({ ok: false, error: "state must be 'on' or 'off'" }, 400);
+  WA_BOT_KILLED = (requested === "on"); // "on" = paused, "off" = resumed
+  console.log("ADMIN_WA_PAUSE:", "killed=" + WA_BOT_KILLED, "by=Skool");
+  return c.json({ ok: true, killed: WA_BOT_KILLED, requested, source: "POST /admin/wa-pause" });
+});
+app.get("/admin/wa-pause", (c) => c.json({ killed: WA_BOT_KILLED, killSwitchEnv: isAIKilled(), nightMode: WA_NIGHT_MODE, quietNow: isQuietHourParis(), pausedTotal: isBotPaused() }));
+
 app.get("/api/test-skool-bot", async (c) => {
   const SKOOL_SECRET = (typeof process !== "undefined" && process.env && process.env.SKOOL_SECRET) || "";
   const SKOOL_BOT_URL = (typeof process !== "undefined" && process.env && process.env.SKOOL_BOT_REPLY_URL) || "https://skool-setter-bot-production.up.railway.app/api/whatsapp-reply";
